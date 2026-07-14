@@ -1,0 +1,14 @@
+# Local secrets for deepscout. Copy to `.dev.vars` (git-ignored) and fill in.
+# In production use `wrangler secret put <NAME>`.
+
+# ai-gw project key (mint one in the ai-gw studio /keys for project "deepscout").
+AIGW_API_KEY=
+
+# Search providers — set the ones you have; an absent key skips that provider
+# in the search fall-through. At least one is required to run.
+TAVILY_API_KEY=
+BRAVE_API_KEY=
+
+# Optional: protect deepscout's own API with a bearer token (any string).
+# If unset, the API is open (fine for local dev / a private Worker).
+DEEPSCOUT_TOKEN=

@@ -1,0 +1,35 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "deepscout",
+	// Plain Worker (not SvelteKit): this is a job backend. Account comes from the
+	// CLOUDFLARE_API_TOKEN env var — no account_id here.
+	"main": "src/index.ts",
+	"compatibility_date": "2026-06-15",
+	"compatibility_flags": ["nodejs_als"],
+	"observability": { "enabled": true },
+
+	// Vars (non-secret). The base URL of the ai-gw gateway this orchestrator calls
+	// for /v1/fetch (page text) and /v1/run (inference).
+	"vars": {
+		"AIGW_BASE_URL": "https://ai-gw.jens-naterman-e05.workers.dev"
+	},
+
+	// D1 — the debug trail: one research_job row + many research_step rows per run
+	// (search/fetch/extract/gap/synthesize), each recording provider, winning model,
+	// cost, timing. Create with:  wrangler d1 create deepscout-db  (paste id below)
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "deepscout-db",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
+		}
+	]
+
+	// Secrets (wrangler secret put / .dev.vars):
+	//   AIGW_API_KEY      — a deepscout project key minted in ai-gw
+	//   TAVILY_API_KEY    — https://tavily.com  (free tier)
+	//   BRAVE_API_KEY     — https://brave.com/search/api  (free tier)
+	//   DEEPSCOUT_TOKEN   — optional bearer to protect this Worker's own API
+	// An absent search key = that provider is skipped in the search fall-through.
+}

@@ -1,0 +1,26 @@
+{
+	"name": "deepscout",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"gen": "wrangler types",
+		"check": "wrangler types && tsc --noEmit",
+		"lint": "prettier --check . && eslint .",
+		"format": "prettier --write .",
+		"test": "node --test",
+		"db:migrate:local": "wrangler d1 migrations apply deepscout-db --local",
+		"db:migrate:remote": "wrangler d1 migrations apply deepscout-db --remote"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^5.20260708.1",
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.4.1",
+		"prettier": "^3.8.3",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.60.1",
+		"wrangler": "^4.97.0"
+	}
+}

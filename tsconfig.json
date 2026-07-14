@@ -1,0 +1,18 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ES2022",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2023"],
+		"types": ["@cloudflare/workers-types"],
+		"strict": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"verbatimModuleSyntax": false
+	},
+	// src is typechecked with `tsc` (Workers types). Tests run via `node --test`
+	// (Node strips the types), so they're not in the tsc program.
+	"include": ["src/**/*.ts"]
+}
