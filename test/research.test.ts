@@ -152,3 +152,32 @@ test('runResearch: checkpoints progress before completion', async () => {
 		assert.ok(checkpoints[i] >= checkpoints[i - 1], 'step trail grows monotonically');
 	}
 });
+
+test('runResearch: resume skips gathering and only synthesizes', async () => {
+	const { deps } = makeDeps();
+	const searched: string[] = [];
+	const orig = deps.search;
+	deps.search = async (q, n) => {
+		searched.push(q);
+		return orig(q, n);
+	};
+	let notesReady = 0;
+	deps.onNotesReady = () => {
+		notesReady++;
+	};
+	const out = await runResearch(deps, {
+		question: 'q',
+		resume: {
+			notes: [{ claim: 'prior fact', url: 'https://x.example/' }],
+			sources: ['https://x.example/']
+		}
+	});
+	assert.equal(searched.length, 0, 'no search/extract when resuming');
+	assert.equal(out.report, 'FINAL REPORT', 'still produced a report');
+	assert.deepEqual(out.sources, ['https://x.example/'], 'sources carried from resume');
+	assert.ok(
+		out.notes.some((n) => n.claim === 'prior fact'),
+		'prior notes fed to synthesis'
+	);
+	assert.equal(notesReady, 1, 'notes persisted once before synthesis');
+});

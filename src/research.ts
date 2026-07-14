@@ -33,6 +33,12 @@ export interface ResearchDeps {
 	 * a status poll can read. Awaited, so the write finishes before work resumes.
 	 */
 	onProgress?(steps: Step[], notes: Note[]): Promise<void> | void;
+	/**
+	 * Called once with the full note set + sources right before synthesis, so the
+	 * caller can persist them. A later retry can then pass them back as
+	 * `options.resume` to synthesize without re-gathering (see below).
+	 */
+	onNotesReady?(notes: Note[], sources: string[]): Promise<void> | void;
 }
 
 export interface ResearchOptions {
@@ -43,6 +49,13 @@ export interface ResearchOptions {
 	maxResultsPerQuery?: number;
 	/** Escalate JS-thin pages to a rendered fetch (Browser Rendering). Off by default. */
 	render?: boolean;
+	/**
+	 * Resume a run that already gathered notes (e.g. a prior attempt that only
+	 * failed at synthesis): skip plan/search/fetch/extract entirely and go
+	 * straight to synthesizing these notes. Avoids re-doing all the work — and
+	 * re-hitting the rate limits — just because the final step failed.
+	 */
+	resume?: { notes: Note[]; sources: string[] };
 }
 
 export interface Note {
@@ -79,12 +92,19 @@ export interface ResearchOutcome {
 	ms: number;
 }
 
-// --- Synthesis prefers Gemini (huge context); extraction uses the reasoning route.
-const SYNTH_MODELS = [
-	{ provider: 'gemini', model: 'gemini-2.5-flash' },
-	{ provider: 'gemini', model: 'gemini-3-flash-preview' },
-	{ provider: 'sambanova', model: 'DeepSeek-V3.2' }
-];
+// Model allocation lives in ai-gw routes (tunable there, no deepscout redeploy):
+//  - PLAN_ROUTE ('reasoning'): the ONE planning call that decomposes the question
+//    and steers every search — high-leverage and cheap (once per run), so it gets
+//    a strong, Gemini-first chain.
+//  - EXTRACT_ROUTE ('research-extract'): the high-volume work (extract batches +
+//    the per-round gap check), on a deliberately Gemini-free chain so we don't
+//    burn Gemini's free-tier quota on the bulk tasks.
+//  - SYNTH_ROUTE ('research-synth'): the one final synthesis call — Gemini first
+//    (huge context), with a deep non-Gemini fallback so a rate-limit still yields
+//    a report instead of failing the whole run.
+const PLAN_ROUTE = 'reasoning';
+const EXTRACT_ROUTE = 'research-extract';
+const SYNTH_ROUTE = 'research-synth';
 
 // JS-render escalation (opt-in): a page whose plain-fetch text is below this is
 // "thin" (likely an SPA shell); render at most this many per round to respect
@@ -185,12 +205,28 @@ export async function runResearch(
 	//    the wording and fans out across the question's facets, so round 0 pulls
 	//    far more (and more on-target) URLs. Falls back to the raw question if
 	//    planning fails or returns nothing.
+	let round = 0;
+	const resumed = (options.resume?.notes?.length ?? 0) > 0;
+	if (resumed) {
+		// Reuse a prior attempt's gathered material; skip straight to synthesis.
+		notes.push(...(options.resume?.notes ?? []));
+		for (const u of options.resume?.sources ?? []) seen.add(u);
+		record({
+			round: 0,
+			phase: 'plan',
+			detail: `resumed with ${notes.length} notes from a prior attempt (skipping gathering)`,
+			ms: 0,
+			ok: true
+		});
+		await deps.onProgress?.(steps, notes);
+	}
+
 	let queries = [options.question];
-	{
+	if (!resumed) {
 		const t0 = deps.now();
 		try {
 			const r = await deps.infer({
-				route: 'reasoning',
+				route: PLAN_ROUTE,
 				system: PLAN_SYS,
 				text: `QUESTION: ${options.question}`,
 				json: true,
@@ -225,10 +261,9 @@ export async function runResearch(
 			});
 		}
 	}
-	await deps.onProgress?.(steps, notes); // checkpoint: plan visible immediately
+	if (!resumed) await deps.onProgress?.(steps, notes); // checkpoint: plan visible immediately
 
-	let round = 0;
-	for (; round < maxRounds; round++) {
+	for (; !resumed && round < maxRounds; round++) {
 		// 1. Search each query; collect candidates.
 		const candidates: SearchResult[] = [];
 		for (const q of queries) {
@@ -359,7 +394,7 @@ export async function runResearch(
 				const t0 = deps.now();
 				try {
 					const r = await deps.infer({
-						route: 'reasoning',
+						route: EXTRACT_ROUTE,
 						system: EXTRACT_SYS,
 						text,
 						json: true,
@@ -405,7 +440,7 @@ export async function runResearch(
 				const text =
 					`QUESTION: ${options.question}\n\nNOTES:\n` + notes.map((n) => `- ${n.claim}`).join('\n');
 				const r = await deps.infer({
-					route: 'reasoning',
+					route: EXTRACT_ROUTE,
 					system: GAP_SYS,
 					text,
 					json: true,
@@ -448,7 +483,11 @@ export async function runResearch(
 		}
 	}
 
-	// 5. Synthesize the report (Gemini big context; falls through to DeepSeek).
+	// Persist the gathered notes + sources before the final (failure-prone)
+	// synthesis, so a retry can resume here instead of re-gathering everything.
+	await deps.onNotesReady?.(notes, [...seen]);
+
+	// 5. Synthesize the report — Gemini first (big context), non-Gemini fallbacks.
 	let report = '';
 	{
 		const t0 = deps.now();
@@ -456,7 +495,7 @@ export async function runResearch(
 		const text = `QUESTION: ${options.question}\n\nNOTES:\n${numbered || '(no notes gathered)'}`;
 		try {
 			const r = await deps.infer({
-				models: SYNTH_MODELS,
+				route: SYNTH_ROUTE,
 				system: SYNTH_SYS,
 				text,
 				useCase: 'research-synth'

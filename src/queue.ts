@@ -2,7 +2,15 @@ import { DurableObject } from 'cloudflare:workers';
 import { AigwClient } from './aigw';
 import { search as runSearch } from './search/registry';
 import { runResearch, type ResearchDeps } from './research';
-import { claimNext, complete, failOrRetry, nextWakeAt, reclaimStale, saveProgress } from './db';
+import {
+	claimNext,
+	complete,
+	failOrRetry,
+	nextWakeAt,
+	reclaimStale,
+	saveNotes,
+	saveProgress
+} from './db';
 
 /**
  * The queue engine as a single Durable Object (`idFromName('singleton')`), so
@@ -46,7 +54,10 @@ export class ResearchQueue extends DurableObject<Env> {
 			now: () => Date.now(),
 			uuid: () => crypto.randomUUID(),
 			// Persist a live checkpoint so a status poll sees steps as they land.
-			onProgress: (steps) => saveProgress(this.env.DB, jobId, steps, Math.floor(Date.now() / 1000))
+			onProgress: (steps) => saveProgress(this.env.DB, jobId, steps, Math.floor(Date.now() / 1000)),
+			// Persist gathered notes before synthesis so a retry can resume there.
+			onNotesReady: (notes, sources) =>
+				saveNotes(this.env.DB, jobId, notes, sources, Math.floor(Date.now() / 1000))
 		};
 	}
 
@@ -64,7 +75,9 @@ export class ResearchQueue extends DurableObject<Env> {
 				urlsPerRound: job.opts.urlsPerRound,
 				extractBatch: job.opts.extractBatch,
 				maxResultsPerQuery: job.opts.maxResultsPerQuery,
-				render: job.opts.render
+				render: job.opts.render,
+				// A prior attempt already gathered notes ⇒ resume straight at synthesis.
+				resume: job.notes.length ? { notes: job.notes, sources: job.sources } : undefined
 			});
 			nowSec = Math.floor(Date.now() / 1000);
 			if (outcome.report) {

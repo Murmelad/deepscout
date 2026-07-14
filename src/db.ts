@@ -1,4 +1,4 @@
-import type { ResearchOutcome, Step } from './research';
+import type { Note, ResearchOutcome, Step } from './research';
 
 /** Cap any stored JSON blob so a step row can't blow D1's value-size limit. */
 const MAX_TRACE = 6000;
@@ -49,20 +49,42 @@ export interface ClaimedJob {
 	question: string;
 	opts: JobOpts;
 	attempts: number;
+	/** Notes/sources persisted by a prior attempt (present ⇒ resume at synthesis). */
+	notes: Note[];
+	sources: string[];
 }
+
+const parseArr = <T>(s: string | null): T[] => {
+	if (!s) return [];
+	try {
+		const p = JSON.parse(s);
+		return Array.isArray(p) ? (p as T[]) : [];
+	} catch {
+		return [];
+	}
+};
 
 /**
  * Claim the oldest eligible queued job (compare-and-swap on status so two
  * concurrent cron ticks can't grab the same one). Returns null if none ready.
+ * Carries any notes/sources a prior attempt saved, so the caller can resume at
+ * synthesis instead of re-gathering.
  */
 export async function claimNext(db: D1Database, nowSec: number): Promise<ClaimedJob | null> {
 	const row = await db
 		.prepare(
-			`SELECT id, question, opts, attempts FROM research_job
+			`SELECT id, question, opts, attempts, notes, sources FROM research_job
 			 WHERE status='queued' AND next_run_at <= ? ORDER BY created_at LIMIT 1`
 		)
 		.bind(nowSec)
-		.first<{ id: string; question: string; opts: string | null; attempts: number }>();
+		.first<{
+			id: string;
+			question: string;
+			opts: string | null;
+			attempts: number;
+			notes: string | null;
+			sources: string | null;
+		}>();
 	if (!row) return null;
 
 	const claim = await db
@@ -76,7 +98,9 @@ export async function claimNext(db: D1Database, nowSec: number): Promise<Claimed
 		id: row.id,
 		question: row.question,
 		opts: row.opts ? (JSON.parse(row.opts) as JobOpts) : {},
-		attempts: row.attempts
+		attempts: row.attempts,
+		notes: parseArr<Note>(row.notes),
+		sources: parseArr<string>(row.sources)
 	};
 }
 
@@ -132,6 +156,27 @@ export async function saveProgress(db: D1Database, id: string, steps: Step[], no
 	await writeSteps(db, id, steps, nowSec);
 }
 
+/**
+ * Persist the gathered notes + sources (called right before synthesis). Kept on
+ * the job row so a later retry can resume at synthesis via `runResearch`'s
+ * `resume` option instead of re-searching/-extracting. Guarded on 'running' so a
+ * late write can't clobber an already-finished job.
+ */
+export async function saveNotes(
+	db: D1Database,
+	id: string,
+	notes: Note[],
+	sources: string[],
+	nowSec: number
+) {
+	await db
+		.prepare(
+			`UPDATE research_job SET notes=?, sources=?, updated_at=? WHERE id=? AND status='running'`
+		)
+		.bind(JSON.stringify(notes), JSON.stringify(sources), nowSec, id)
+		.run();
+}
+
 /** Mark a job done (status 'ok') and store its report + trail. */
 export async function complete(
 	db: D1Database,
@@ -177,7 +222,9 @@ export async function failOrRetry(
 	error: string,
 	nowSec: number,
 	outcome: ResearchOutcome | null,
-	maxAttempts = 3
+	// Retries are cheap now that a synth-only failure resumes from saved notes
+	// (no re-gathering), so allow a few more attempts to ride out a rate limit.
+	maxAttempts = 5
 ): Promise<'queued' | 'error'> {
 	const nextAttempts = attempts + 1;
 	if (outcome) await writeSteps(db, id, outcome.steps, nowSec).catch(() => {});
