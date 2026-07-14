@@ -18,7 +18,11 @@ import { claimNext, complete, enqueue, failOrRetry, getJob, listJobs, reclaimSta
  * rate-limited provider is skipped next time.
  */
 
-const MAX_PER_TICK = 3; // jobs processed per cron tick (keeps under free-tier limits)
+// One job per cron tick: the Workers FREE plan caps CPU at 10 ms per invocation,
+// and a job's prompt-building is the main CPU cost — don't stack several in one
+// tick. Cron runs every minute, so the queue still drains steadily. Raise this
+// on Workers Paid (CPU up to 30 s / 5 min).
+const MAX_PER_TICK = 1;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body, null, 2), {

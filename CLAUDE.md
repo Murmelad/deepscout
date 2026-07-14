@@ -36,9 +36,12 @@ Pipeline per round (`src/research.ts`):
   backoff (`backoffSec`, capped 30 min) up to 3 attempts, then `error`. Each retry passes the
   attempt count as a `rotate` offset to the search registry, so a rate-limited provider is _not_
   tried first next time. (`db.ts` `failOrRetry`.)
-- **Free-tier bounded per run.** The Workers free tier caps a request/cron invocation at 50
-  subrequests. A run uses ~1 search + 1 batched fetch (≤10 URLs = 1 subrequest) + a few extract
-  calls + 1 gap + 1 synth per round — well under 50 even at 2–3 rounds. Bounds: `maxRounds ≤ 4`,
+- **Free-tier bounded per run.** Workers free caps an invocation at **50 subrequests** and
+  **10 ms CPU**. Subrequests: ~1 search + 1 batched fetch (≤10 URLs = 1 subrequest) + a few
+  extract + 1 gap + 1 synth per round — well under 50 even at 2–3 rounds (network waits aren't
+  CPU). CPU: prompt-building/JSON is the only real cost, so `MAX_PER_TICK=1` (one job/tick) keeps
+  it minimal; a pathologically large job that brushes 10 ms gets killed, stays `running`, and is
+  reaped→retried. Workers Paid ($5/mo, CPU 30 s) removes the concern. Bounds: `maxRounds ≤ 4`,
   `urlsPerRound ≤ 12`.
 - **D1 debug trail (free-tier sized).** One `research_job` row (+ queue bookkeeping: attempts,
   next_run_at, running_at) + one `research_step` row per pipeline step (~10–20 rows/run) recording
