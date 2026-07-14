@@ -60,7 +60,8 @@ export class ResearchQueue extends DurableObject<Env> {
 				question: job.question,
 				maxRounds: job.opts.maxRounds,
 				urlsPerRound: job.opts.urlsPerRound,
-				extractBatch: job.opts.extractBatch
+				extractBatch: job.opts.extractBatch,
+				render: job.opts.render
 			});
 			nowSec = Math.floor(Date.now() / 1000);
 			if (outcome.report) {

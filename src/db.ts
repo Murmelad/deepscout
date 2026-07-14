@@ -12,6 +12,7 @@ export interface JobOpts {
 	maxRounds?: number;
 	urlsPerRound?: number;
 	extractBatch?: number;
+	render?: boolean;
 }
 
 /** Enqueue a research request. Returns immediately with the row in 'queued'. */

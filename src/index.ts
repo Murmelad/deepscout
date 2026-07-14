@@ -60,6 +60,7 @@ export default {
 				maxRounds?: number;
 				urlsPerRound?: number;
 				extractBatch?: number;
+				render?: boolean;
 			};
 			try {
 				body = (await request.json()) as typeof body;
@@ -83,7 +84,8 @@ export default {
 				{
 					maxRounds: body.maxRounds,
 					urlsPerRound: body.urlsPerRound,
-					extractBatch: body.extractBatch
+					extractBatch: body.extractBatch,
+					render: body.render === true
 				},
 				Math.floor(Date.now() / 1000)
 			);

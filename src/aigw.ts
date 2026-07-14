@@ -34,15 +34,19 @@ export class AigwClient {
 		return { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` };
 	}
 
-	/** POST /v1/fetch — up to 10 URLs per call → clean page text. */
-	async fetchUrls(urls: string[], maxChars = 12_000): Promise<FetchedPage[]> {
+	/**
+	 * POST /v1/fetch — up to 10 URLs per call → clean page text. `render:true`
+	 * asks ai-gw for JS-rendered content (Browser Rendering); ai-gw caps how many
+	 * it renders and degrades to plain fetch, so it's safe to pass freely.
+	 */
+	async fetchUrls(urls: string[], maxChars = 12_000, render = false): Promise<FetchedPage[]> {
 		const out: FetchedPage[] = [];
 		for (let i = 0; i < urls.length; i += 10) {
 			const batch = urls.slice(i, i + 10);
 			const res = await fetch(`${this.baseUrl}/v1/fetch`, {
 				method: 'POST',
 				headers: this.headers(),
-				body: JSON.stringify({ urls: batch, maxChars })
+				body: JSON.stringify({ urls: batch, maxChars, render })
 			});
 			if (!res.ok)
 				throw new Error(`ai-gw /v1/fetch ${res.status}: ${(await res.text()).slice(0, 200)}`);

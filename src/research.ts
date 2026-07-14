@@ -15,7 +15,7 @@ import type { FetchedPage, InferResult } from './aigw';
 
 export interface ResearchDeps {
 	search(query: string, maxResults: number): Promise<{ provider: string; results: SearchResult[] }>;
-	fetchUrls(urls: string[]): Promise<FetchedPage[]>;
+	fetchUrls(urls: string[], render?: boolean): Promise<FetchedPage[]>;
 	infer(opts: {
 		route?: string;
 		models?: { provider: string; model: string }[];
@@ -35,6 +35,8 @@ export interface ResearchOptions {
 	urlsPerRound?: number;
 	extractBatch?: number;
 	maxResultsPerQuery?: number;
+	/** Escalate JS-thin pages to a rendered fetch (Browser Rendering). Off by default. */
+	render?: boolean;
 }
 
 export interface Note {
@@ -77,6 +79,12 @@ const SYNTH_MODELS = [
 	{ provider: 'gemini', model: 'gemini-3-flash-preview' },
 	{ provider: 'sambanova', model: 'DeepSeek-V3.2' }
 ];
+
+// JS-render escalation (opt-in): a page whose plain-fetch text is below this is
+// "thin" (likely an SPA shell); render at most this many per round to respect
+// Browser Rendering's tiny free budget.
+const RENDER_THIN_CHARS = 400;
+const RENDER_CAP = 3;
 
 function normalizeUrl(u: string): string {
 	try {
@@ -230,6 +238,45 @@ export async function runResearch(
 					ok: false,
 					error: String(e).slice(0, 300)
 				});
+			}
+		}
+
+		// 2b. Optionally escalate JS-thin pages to a rendered fetch (capped —
+		//     Browser Rendering's free budget is tiny). Off unless options.render.
+		if (options.render) {
+			const thin = needFetch
+				.filter((u) => (fetchedByUrl.get(u)?.text?.length ?? 0) < RENDER_THIN_CHARS)
+				.slice(0, RENDER_CAP);
+			if (thin.length) {
+				const t0 = deps.now();
+				try {
+					const rendered = await deps.fetchUrls(thin, true);
+					let improved = 0;
+					for (const p of rendered) {
+						const prev = fetchedByUrl.get(p.url)?.text?.length ?? 0;
+						if (p.ok && (p.text?.length ?? 0) > prev) {
+							fetchedByUrl.set(p.url, p);
+							improved++;
+						}
+					}
+					record({
+						round,
+						phase: 'fetch',
+						detail: `rendered ${improved}/${thin.length} thin pages`,
+						trace: rendered.map((p) => ({ url: p.url, ok: p.ok, chars: p.chars })),
+						ms: deps.now() - t0,
+						ok: true
+					});
+				} catch (e) {
+					record({
+						round,
+						phase: 'fetch',
+						detail: `render ${thin.length}`,
+						ms: deps.now() - t0,
+						ok: false,
+						error: String(e).slice(0, 300)
+					});
+				}
 			}
 		}
 
