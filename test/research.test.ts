@@ -137,3 +137,18 @@ test('runResearch: plans focused queries before the first search', async () => {
 		'the raw question was not used as the search query'
 	);
 });
+
+test('runResearch: checkpoints progress before completion', async () => {
+	const { deps } = makeDeps();
+	const checkpoints: number[] = [];
+	deps.onProgress = (steps) => {
+		checkpoints.push(steps.length);
+	};
+	await runResearch(deps, { question: 'q', maxRounds: 2 });
+	// At least: once after planning, once per round — and each checkpoint sees
+	// more steps than the last (monotonic growth of the trail).
+	assert.ok(checkpoints.length >= 3, 'checkpointed after plan + each round');
+	for (let i = 1; i < checkpoints.length; i++) {
+		assert.ok(checkpoints[i] >= checkpoints[i - 1], 'step trail grows monotonically');
+	}
+});

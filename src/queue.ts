@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { AigwClient } from './aigw';
 import { search as runSearch } from './search/registry';
 import { runResearch, type ResearchDeps } from './research';
-import { claimNext, complete, failOrRetry, nextWakeAt, reclaimStale } from './db';
+import { claimNext, complete, failOrRetry, nextWakeAt, reclaimStale, saveProgress } from './db';
 
 /**
  * The queue engine as a single Durable Object (`idFromName('singleton')`), so
@@ -37,14 +37,16 @@ export class ResearchQueue extends DurableObject<Env> {
 		return r;
 	}
 
-	private deps(attempt: number): ResearchDeps {
+	private deps(attempt: number, jobId: string): ResearchDeps {
 		const aigw = new AigwClient(this.env.AIGW_BASE_URL, this.env.AIGW_API_KEY);
 		return {
 			search: (q, n) => runSearch(this.env, q, n, attempt),
 			fetchUrls: (urls) => aigw.fetchUrls(urls),
 			infer: (opts) => aigw.run(opts),
 			now: () => Date.now(),
-			uuid: () => crypto.randomUUID()
+			uuid: () => crypto.randomUUID(),
+			// Persist a live checkpoint so a status poll sees steps as they land.
+			onProgress: (steps) => saveProgress(this.env.DB, jobId, steps, Math.floor(Date.now() / 1000))
 		};
 	}
 
@@ -56,7 +58,7 @@ export class ResearchQueue extends DurableObject<Env> {
 		if (!job) return null;
 
 		try {
-			const outcome = await runResearch(this.deps(job.attempts), {
+			const outcome = await runResearch(this.deps(job.attempts, job.id), {
 				question: job.question,
 				maxRounds: job.opts.maxRounds,
 				urlsPerRound: job.opts.urlsPerRound,

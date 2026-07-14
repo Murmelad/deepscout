@@ -1,4 +1,4 @@
-import type { ResearchOutcome } from './research';
+import type { ResearchOutcome, Step } from './research';
 
 /** Cap any stored JSON blob so a step row can't blow D1's value-size limit. */
 const MAX_TRACE = 6000;
@@ -80,38 +80,56 @@ export async function claimNext(db: D1Database, nowSec: number): Promise<Claimed
 	};
 }
 
-/** Replace a job's step trail with the latest attempt's steps. */
-async function writeSteps(db: D1Database, id: string, outcome: ResearchOutcome, nowSec: number) {
-	await db.prepare('DELETE FROM research_step WHERE job_id=?').bind(id).run();
-	if (!outcome.steps.length) return;
+/**
+ * Replace a job's step trail with `steps`, atomically — the DELETE + INSERTs run
+ * as one D1 batch (a transaction), so a concurrent poll of GET /research/:id
+ * never observes an empty trail mid-write. Used for both the final trail and
+ * live progress checkpoints.
+ */
+async function writeSteps(db: D1Database, id: string, steps: Step[], nowSec: number) {
+	const del = db.prepare('DELETE FROM research_step WHERE job_id=?').bind(id);
+	if (!steps.length) {
+		await del.run();
+		return;
+	}
 	const stmt = db.prepare(
 		`INSERT INTO research_step
 		 (id, job_id, seq, round, phase, detail, provider, model, trace,
 		  input_chars, output_chars, cost_usd, ms, ok, error, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	);
-	await db.batch(
-		outcome.steps.map((s) =>
-			stmt.bind(
-				`${id}:${s.seq}`,
-				id,
-				s.seq,
-				s.round,
-				s.phase,
-				clip(s.detail),
-				s.provider ?? null,
-				s.model ?? null,
-				clip(s.trace),
-				s.inputChars ?? null,
-				s.outputChars ?? null,
-				s.costUsd ?? null,
-				s.ms,
-				s.ok ? 1 : 0,
-				s.error ?? null,
-				nowSec
-			)
+	const inserts = steps.map((s) =>
+		stmt.bind(
+			`${id}:${s.seq}`,
+			id,
+			s.seq,
+			s.round,
+			s.phase,
+			clip(s.detail),
+			s.provider ?? null,
+			s.model ?? null,
+			clip(s.trace),
+			s.inputChars ?? null,
+			s.outputChars ?? null,
+			s.costUsd ?? null,
+			s.ms,
+			s.ok ? 1 : 0,
+			s.error ?? null,
+			nowSec
 		)
 	);
+	await db.batch([del, ...inserts]);
+}
+
+/**
+ * Persist a live progress checkpoint mid-run: rewrite the step trail so a poll
+ * sees steps as they complete. The job stays 'running'; the report, sources and
+ * notes are written only by `complete()` at the end. Called a bounded number of
+ * times per run (after planning + once per round) to stay within the free-tier
+ * per-invocation budget.
+ */
+export async function saveProgress(db: D1Database, id: string, steps: Step[], nowSec: number) {
+	await writeSteps(db, id, steps, nowSec);
 }
 
 /** Mark a job done (status 'ok') and store its report + trail. */
@@ -140,7 +158,7 @@ export async function complete(
 			id
 		)
 		.run();
-	await writeSteps(db, id, outcome, nowSec);
+	await writeSteps(db, id, outcome.steps, nowSec);
 }
 
 /** Backoff schedule for a retry after `attempts` failures (seconds). */
@@ -162,7 +180,7 @@ export async function failOrRetry(
 	maxAttempts = 3
 ): Promise<'queued' | 'error'> {
 	const nextAttempts = attempts + 1;
-	if (outcome) await writeSteps(db, id, outcome, nowSec).catch(() => {});
+	if (outcome) await writeSteps(db, id, outcome.steps, nowSec).catch(() => {});
 	if (nextAttempts < maxAttempts) {
 		await db
 			.prepare(

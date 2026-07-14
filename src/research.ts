@@ -27,6 +27,12 @@ export interface ResearchDeps {
 	now(): number;
 	uuid(): string;
 	log?(msg: string): void;
+	/**
+	 * Optional live-progress hook: called with the steps + notes gathered so far
+	 * after planning and after each round, so the caller can persist a checkpoint
+	 * a status poll can read. Awaited, so the write finishes before work resumes.
+	 */
+	onProgress?(steps: Step[], notes: Note[]): Promise<void> | void;
 }
 
 export interface ResearchOptions {
@@ -219,6 +225,7 @@ export async function runResearch(
 			});
 		}
 	}
+	await deps.onProgress?.(steps, notes); // checkpoint: plan visible immediately
 
 	let round = 0;
 	for (; round < maxRounds; round++) {
@@ -389,6 +396,7 @@ export async function runResearch(
 			})
 		);
 		for (const arr of extractResults) notes.push(...arr);
+		await deps.onProgress?.(steps, notes); // checkpoint: this round's steps visible
 
 		// 4. Gap-check → queries for the next round (skip after the last round).
 		if (round < maxRounds - 1 && notes.length) {
