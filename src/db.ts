@@ -12,6 +12,7 @@ export interface JobOpts {
 	maxRounds?: number;
 	urlsPerRound?: number;
 	extractBatch?: number;
+	maxResultsPerQuery?: number;
 	render?: boolean;
 }
 

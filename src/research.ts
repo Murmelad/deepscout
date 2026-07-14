@@ -47,7 +47,7 @@ export interface Note {
 export interface Step {
 	seq: number;
 	round: number;
-	phase: 'search' | 'fetch' | 'extract' | 'gap' | 'synthesize';
+	phase: 'plan' | 'search' | 'fetch' | 'extract' | 'gap' | 'synthesize';
 	detail: string;
 	provider?: string;
 	model?: string;
@@ -128,6 +128,13 @@ const EXTRACT_SYS =
 	'exact source URL it came from. Ignore navigation/boilerplate. Respond ONLY with JSON: ' +
 	'{"notes":[{"claim":"…","url":"…"}]}. Max 12 notes.';
 
+const PLAN_SYS =
+	'You are a research planner. Decompose the QUESTION into 3–5 focused web-search queries ' +
+	'that together cover its distinct facets, named entities, and comparison axes. Prefer ' +
+	'short keyword-style queries a search engine handles well over full sentences, and make ' +
+	'each query target a different angle (avoid near-duplicates). Respond ONLY with JSON: ' +
+	'{"queries":["…"]}.';
+
 const GAP_SYS =
 	'You are a research planner. Given the QUESTION and the NOTES gathered so far, list up ' +
 	'to 3 web search queries that would fill the most important remaining gaps. If the ' +
@@ -166,7 +173,53 @@ export async function runResearch(
 		if (r.provider && r.model) modelsUsed.add(`${r.provider}/${r.model}`);
 	};
 
+	// 0. Plan — decompose the question into focused search queries before the
+	//    first search. A raw research question is a poor search query and a single
+	//    query pulls only ~maxResultsPerQuery candidates; planning both sharpens
+	//    the wording and fans out across the question's facets, so round 0 pulls
+	//    far more (and more on-target) URLs. Falls back to the raw question if
+	//    planning fails or returns nothing.
 	let queries = [options.question];
+	{
+		const t0 = deps.now();
+		try {
+			const r = await deps.infer({
+				route: 'reasoning',
+				system: PLAN_SYS,
+				text: `QUESTION: ${options.question}`,
+				json: true,
+				useCase: 'research-plan'
+			});
+			noteModel(r);
+			const parsed = safeJson<{ queries?: string[] }>(r.output);
+			const planned = (parsed?.queries ?? [])
+				.map((q) => String(q).trim())
+				.filter(Boolean)
+				.slice(0, 5);
+			if (planned.length) queries = planned;
+			record({
+				round: 0,
+				phase: 'plan',
+				detail: queries.join(' | '),
+				provider: r.provider ?? undefined,
+				model: r.model ?? undefined,
+				trace: r.trace,
+				costUsd: r.costUsd,
+				ms: deps.now() - t0,
+				ok: true
+			});
+		} catch (e) {
+			record({
+				round: 0,
+				phase: 'plan',
+				detail: 'plan failed — using the raw question',
+				ms: deps.now() - t0,
+				ok: false,
+				error: String(e).slice(0, 300)
+			});
+		}
+	}
+
 	let round = 0;
 	for (; round < maxRounds; round++) {
 		// 1. Search each query; collect candidates.

@@ -61,6 +61,7 @@ export class ResearchQueue extends DurableObject<Env> {
 				maxRounds: job.opts.maxRounds,
 				urlsPerRound: job.opts.urlsPerRound,
 				extractBatch: job.opts.extractBatch,
+				maxResultsPerQuery: job.opts.maxResultsPerQuery,
 				render: job.opts.render
 			});
 			nowSec = Math.floor(Date.now() / 1000);

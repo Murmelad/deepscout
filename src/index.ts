@@ -60,6 +60,7 @@ export default {
 				maxRounds?: number;
 				urlsPerRound?: number;
 				extractBatch?: number;
+				maxResultsPerQuery?: number;
 				render?: boolean;
 			};
 			try {
@@ -85,6 +86,7 @@ export default {
 					maxRounds: body.maxRounds,
 					urlsPerRound: body.urlsPerRound,
 					extractBatch: body.extractBatch,
+					maxResultsPerQuery: body.maxResultsPerQuery,
 					render: body.render === true
 				},
 				Math.floor(Date.now() / 1000)

@@ -10,7 +10,15 @@ page-fetching itself**: it calls **ai-gw** (the sibling AI-inference gateway at
 `C:\New folder\ai-gw`, live at `https://ai-gw.jens-naterman-e05.workers.dev`) for both. deepscout
 owns only the research loop and the debug trail.
 
-Pipeline per round (`src/research.ts`):
+Pipeline (`src/research.ts`):
+
+0. **plan** (once, before round 0) — decompose the QUESTION into 3–5 focused, keyword-style
+   search queries covering its distinct facets/entities. A raw question is a poor search query
+   and a single query pulls only ~`maxResultsPerQuery` candidates; planning sharpens the wording
+   and fans out, so round 0 gathers far more on-target URLs. Falls back to the raw question if
+   planning fails/returns nothing. (`research-plan` use-case, reasoning route.)
+
+Then per round:
 
 1. **search** — one query per configured provider (fall-through), collect candidate URLs.
 2. **blacklist dedup** — drop URLs already seen this run (the "not-covered-twice" set).
@@ -81,7 +89,7 @@ npm run deploy              # wrangler deploy
 | Method · Path                  | Does                                                                                                   |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | `GET /`                        | status + configured search providers (public)                                                          |
-| `POST /research`               | enqueue `{ question, maxRounds?, urlsPerRound?, extractBatch? }` → `202 { id, status:'queued', poll }` |
+| `POST /research`               | enqueue `{ question, maxRounds?, urlsPerRound?, extractBatch?, maxResultsPerQuery? }` → `202 { id, status:'queued', poll }` |
 | `GET /research/:id`            | job status (queued/running/ok/error) + report when done + full step trail                              |
 | `GET /research/:id?download=1` | same, as a downloadable JSON archive (self-contained → ai-gw R2 payloads become disposable)            |
 | `GET /research`                | recent jobs / queue (metadata)                                                                         |

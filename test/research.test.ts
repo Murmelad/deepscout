@@ -45,6 +45,9 @@ function makeDeps(): { deps: ResearchDeps; calls: { extractBatches: string[][] }
 				latencyMs: 1,
 				trace: []
 			};
+			if (opts.useCase === 'research-plan') {
+				return { ...base, output: JSON.stringify({ queries: ['plan-a', 'plan-b'] }) };
+			}
 			if (opts.useCase === 'research-extract') {
 				const urls = [...opts.text.matchAll(/--- (\S+) /g)].map((m) => m[1]);
 				calls.extractBatches.push(urls);
@@ -112,4 +115,25 @@ test('runResearch: produces report, notes, model + step trail', async () => {
 		assert.ok(phases.has(p as never), `step trail includes ${p}`);
 	}
 	assert.ok(out.costUsd > 0, 'cost accumulated');
+});
+
+test('runResearch: plans focused queries before the first search', async () => {
+	const { deps } = makeDeps();
+	const searched: string[] = [];
+	const orig = deps.search;
+	deps.search = async (q, n) => {
+		searched.push(q);
+		return orig(q, n);
+	};
+	const out = await runResearch(deps, { question: 'big multifaceted question', maxRounds: 1 });
+	const plan = out.steps.find((s) => s.phase === 'plan');
+	assert.ok(plan?.ok, 'a plan step ran');
+	assert.ok(
+		searched.includes('plan-a') && searched.includes('plan-b'),
+		'planned queries drove round 0'
+	);
+	assert.ok(
+		!searched.includes('big multifaceted question'),
+		'the raw question was not used as the search query'
+	);
 });
