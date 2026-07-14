@@ -1,4 +1,5 @@
 import type { SearchProvider, SearchResult } from './types';
+import { bumpUsage } from '../db';
 import { exa } from './exa';
 import { tavily } from './tavily';
 import { serper } from './serper';
@@ -44,12 +45,15 @@ export async function search(
 	const offset = ((rotate % base.length) + base.length) % base.length;
 	const providers = [...base.slice(offset), ...base.slice(0, offset)];
 
+	const month = new Date().toISOString().slice(0, 7); // 'YYYY-MM' (UTC)
 	let lastErr: unknown = null;
 	for (const p of providers) {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
 		try {
 			const results = await p.search(env, query, maxResults, controller.signal);
+			// Count the consumed free-tier call (best-effort; never fail a search on it).
+			await bumpUsage(env.DB, p.id, month).catch(() => {});
 			return { provider: p.id, results };
 		} catch (e) {
 			lastErr = e;

@@ -1,8 +1,18 @@
 import { configuredProviders } from './search/registry';
-import { enqueue, getJob, listJobs } from './db';
+import { enqueue, getJob, getUsage, listJobs } from './db';
 
 // The Durable Object queue engine must be exported from the Worker's main module.
 export { ResearchQueue } from './queue';
+
+// Approximate MONTHLY free-tier search-request caps per provider. These drift —
+// verify against each provider's current terms and edit freely; they only scale
+// the usage gauge in the studio, nothing enforces them.
+const FREE_LIMITS: Record<string, number> = {
+	exa: 1000,
+	tavily: 1000,
+	serper: 2500,
+	brave: 2000
+};
 
 /**
  * deepscout — a queued research orchestrator over ai-gw.
@@ -12,6 +22,7 @@ export { ResearchQueue } from './queue';
  *   GET  /research/:id?download=1 → same, as a downloadable JSON archive
  *   GET  /research            → recent jobs / queue
  *   POST /drain               → process one now (manual nudge; same work the DO alarm does)
+ *   GET  /usage               → this month's per-provider search usage vs free-tier caps
  *   GET  /                    → status + configured search providers
  *
  * The queue is a Durable Object (src/queue.ts): enqueue kicks it, it drains one
@@ -98,6 +109,18 @@ export default {
 		// Manual nudge — do one unit of the queue's work now.
 		if (request.method === 'POST' && path === '/drain') {
 			return json({ handled: await queue(env).drainNow() });
+		}
+
+		// This month's search-provider usage vs. approximate free-tier caps.
+		if (request.method === 'GET' && path === '/usage') {
+			const month = new Date().toISOString().slice(0, 7);
+			const counts = new Map((await getUsage(env.DB, month)).map((r) => [r.provider, r.count]));
+			const providers = configuredProviders(env).map((p) => ({
+				provider: p.id,
+				count: counts.get(p.id) ?? 0,
+				limit: FREE_LIMITS[p.id] ?? null
+			}));
+			return json({ month, providers });
 		}
 
 		if (request.method === 'GET' && path.startsWith('/research')) {

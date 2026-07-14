@@ -206,6 +206,29 @@ export async function complete(
 	await writeSteps(db, id, outcome.steps, nowSec);
 }
 
+/** Increment this month's search-call counter for a provider (best-effort). */
+export async function bumpUsage(db: D1Database, provider: string, month: string): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO search_usage (provider, month, count) VALUES (?, ?, 1)
+			 ON CONFLICT(provider, month) DO UPDATE SET count = count + 1`
+		)
+		.bind(provider, month)
+		.run();
+}
+
+/** This month's per-provider search-call counts (for the usage gauge). */
+export async function getUsage(
+	db: D1Database,
+	month: string
+): Promise<{ provider: string; count: number }[]> {
+	const res = await db
+		.prepare(`SELECT provider, count FROM search_usage WHERE month = ? ORDER BY provider`)
+		.bind(month)
+		.all<{ provider: string; count: number }>();
+	return res.results ?? [];
+}
+
 /** Backoff schedule for a retry after `attempts` failures (seconds). */
 export function backoffSec(attempts: number): number {
 	return Math.min(60 * 2 ** attempts, 1800);
