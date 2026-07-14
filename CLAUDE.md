@@ -159,3 +159,8 @@ Keep the pure core. Cloudflare **Queues are paid-only** — the DO+alarm queue i
 - Search/LLM keys copied from elsewhere often carry quotes/CRLF — strip before `wrangler secret
 put` (bit us repeatedly in ai-gw).
 - Commit as **murmelad** (personal GitHub), never the work identity.
+- **Workers-Builds secret gotcha (bit us twice):** on a Git-connected Worker, a secret set via
+  `wrangler secret put` / dashboard updates the store but the **running (Builds) deployment
+  doesn't bind it until the next deploy** — the code reads it as unset (e.g. `searchProviders:
+[]`). After setting secrets, run one `WRANGLER_SEND_METRICS=false wrangler deploy` (or push a
+  commit) to bind them. Secrets then persist across future Git builds.
