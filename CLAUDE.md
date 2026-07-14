@@ -89,6 +89,38 @@ npm run deploy              # wrangler deploy
 
 Auth: if `DEEPSCOUT_TOKEN` is set, all but `GET /` require `Authorization: Bearer <token>`.
 
+## Preparing a good research request
+
+deepscout's **internal** models are the free tier — extraction on the `reasoning` route
+(DeepSeek / GLM / gpt-oss) and synthesis on Gemini Flash — and are much weaker than whatever
+capable model is _calling_ deepscout. The extract/synth system prompts are fixed and generic, so
+**the question is your only lever** — the caller should do the thinking the weak models can't and
+hand over a request engineered to succeed:
+
+- **One specific, answerable question.** Refine a vague ask into a single question with the
+  constraints baked in — time horizon (“as of 2026”), region, and the exact comparison axes or
+  deliverable. The weak models won't infer scope; state it explicitly.
+- **Name the candidates/entities.** For a comparison or survey, list what to check in the
+  question (“compare X, Y, Z on price, latency, and free tier”). This both steers the search
+  queries and tells extraction what to look for. (This repo's own provider research did exactly
+  that — it enumerated the providers to verify.)
+- **Front-load the deliverable shape.** Spell out what to return per item (“for each: free-tier
+  limit, whether a card is required, and any catch”). That's the only place “what good looks
+  like” can enter, since the prompts are generic.
+- **Decompose big topics into several focused jobs**, queued separately, not one mega-question.
+  Each job stays within the free-tier per-run bounds, and a narrow scope is where the weak models
+  perform best. Combine the reports yourself.
+- **Tune the knobs to the topic:** `maxRounds` (≤4) higher for broad/exploratory topics (more
+  gap-filling), 1–2 for narrow factual ones; `urlsPerRound` (≤12) for source breadth;
+  `extractBatch` smaller = more parallel model calls (more independent rate-limit buckets),
+  larger = fewer calls but more text per model.
+- **Prefer web-answerable questions.** Fetch is lightweight HTML→text — no JS rendering, no
+  paywalls, no PDFs. Favor topics covered by public article/doc text.
+- **Treat the report as sourced raw material, not the final word.** deepscout does breadth-first
+  gathering + a Flash-tier synthesis. For anything reasoning-heavy, have the capable caller reason
+  over the returned **notes + sources** (every claim carries its URL) rather than trusting the
+  synthesized prose.
+
 ## Bindings & env
 
 - Bindings: `DB` (D1 `deepscout-db`, id in `wrangler.jsonc`), `RESEARCH_QUEUE` (Durable Object
