@@ -5,8 +5,13 @@
 AIGW_API_KEY=
 
 # Search providers — set the ones you have; an absent key skips that provider
-# in the search fall-through. At least one is required to run.
+# in the search fall-through (priority: exa → tavily → serper → brave). At least
+# one is required. exa/tavily return page content (fewer fetches); serper/brave
+# are links-only. Free tiers (2026-07): exa ~20k/mo, tavily 1k/mo, serper
+# 2,500/mo (all no card); brave is now $5/mo auto-credits (pay-per-request).
+EXA_API_KEY=
 TAVILY_API_KEY=
+SERPER_API_KEY=
 BRAVE_API_KEY=
 
 # Optional: protect deepscout's own API with a bearer token (any string).

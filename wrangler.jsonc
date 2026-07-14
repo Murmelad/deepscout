@@ -8,6 +8,10 @@
 	"compatibility_flags": ["nodejs_als"],
 	"observability": { "enabled": true },
 
+	// The queue is drained by cron (Cloudflare Queues are paid-only). Every
+	// minute the scheduled handler claims the oldest eligible job and runs it.
+	"triggers": { "crons": ["* * * * *"] },
+
 	// Vars (non-secret). The base URL of the ai-gw gateway this orchestrator calls
 	// for /v1/fetch (page text) and /v1/run (inference).
 	"vars": {

@@ -1,14 +1,18 @@
 import type { SearchProvider, SearchResult } from './types';
+import { exa } from './exa';
 import { tavily } from './tavily';
+import { serper } from './serper';
 import { brave } from './brave';
 
 /**
- * Search providers in fall-through priority. Content-returning providers first
- * (Tavily gives page text → fewer fetches), then link-only (Brave). Add a
- * provider = one import + one line here + its key. More free-tier providers land
- * here after the search-provider research (Serper, Exa, Jina, …).
+ * Search providers in fall-through priority (verified free tiers, 2026-07):
+ *   exa     — ~20k req/mo, returns page content (best; fewest fetches)
+ *   tavily  — 1k credits/mo, returns content with include_raw_content
+ *   serper  — 2,500 Google-SERP queries/mo, links + snippets only
+ *   brave   — now $5/mo auto-credits (pay-per-request), links only
+ * Add a provider = import + one line here + its key. Content providers first.
  */
-const PROVIDERS: SearchProvider[] = [tavily, brave];
+const PROVIDERS: SearchProvider[] = [exa, tavily, serper, brave];
 
 const SEARCH_TIMEOUT_MS = 15_000;
 
@@ -17,19 +21,28 @@ export interface SearchOutcome {
 	results: SearchResult[];
 }
 
-/** List configured providers, in priority order. */
+/** Configured providers in priority order. */
 export function configuredProviders(env: Env): SearchProvider[] {
 	return PROVIDERS.filter((p) => p.configured(env));
 }
 
 /**
- * Run one query through the first configured provider that succeeds. Returns the
- * provider id used (for the debug trail) + results. Throws only if every
- * configured provider errors; returns empty results if none are configured.
+ * Run one query through the first configured provider that succeeds. `rotate`
+ * offsets which provider is tried first (the queue passes the attempt count, so
+ * a retried job leads with a *different* provider than the one that failed).
+ * Returns the provider id used + results; throws only if every provider errors.
  */
-export async function search(env: Env, query: string, maxResults: number): Promise<SearchOutcome> {
-	const providers = configuredProviders(env);
-	if (!providers.length) return { provider: 'none', results: [] };
+export async function search(
+	env: Env,
+	query: string,
+	maxResults: number,
+	rotate = 0
+): Promise<SearchOutcome> {
+	const base = configuredProviders(env);
+	if (!base.length) return { provider: 'none', results: [] };
+	// Rotate the priority order by `rotate` so retries start elsewhere.
+	const offset = ((rotate % base.length) + base.length) % base.length;
+	const providers = [...base.slice(offset), ...base.slice(0, offset)];
 
 	let lastErr: unknown = null;
 	for (const p of providers) {

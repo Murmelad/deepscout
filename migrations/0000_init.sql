@@ -5,7 +5,8 @@
 CREATE TABLE IF NOT EXISTS research_job (
 	id TEXT PRIMARY KEY,
 	question TEXT NOT NULL,
-	status TEXT NOT NULL,          -- 'running' | 'ok' | 'error'
+	status TEXT NOT NULL,          -- 'queued' | 'running' | 'ok' | 'error'
+	opts TEXT,                     -- json: { maxRounds?, urlsPerRound?, extractBatch? }
 	report TEXT,                   -- final synthesized markdown report
 	sources TEXT,                  -- json: [url, …] every source consulted
 	notes TEXT,                    -- json: extracted claims/notes
@@ -15,6 +16,10 @@ CREATE TABLE IF NOT EXISTS research_job (
 	cost_usd REAL,                 -- sum of ai-gw costUsd (list-price equivalent)
 	ms INTEGER,
 	error TEXT,
+	-- queue bookkeeping (cron-drained; Cloudflare Queues are paid-only)
+	attempts INTEGER NOT NULL DEFAULT 0,
+	next_run_at INTEGER NOT NULL DEFAULT 0,  -- epoch sec; eligible when <= now
+	running_at INTEGER,                      -- claim time; stale claims are reaped
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL
 );
@@ -40,3 +45,5 @@ CREATE TABLE IF NOT EXISTS research_step (
 
 CREATE INDEX IF NOT EXISTS idx_step_job ON research_step (job_id, seq);
 CREATE INDEX IF NOT EXISTS idx_job_created ON research_job (created_at);
+-- The cron picks the oldest eligible queued job.
+CREATE INDEX IF NOT EXISTS idx_job_queue ON research_job (status, next_run_at, created_at);
