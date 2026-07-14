@@ -25,7 +25,7 @@
 		{
 			"binding": "DB",
 			"database_name": "deepscout-db",
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_id": "6a6152a1-138c-43d9-8b78-6a7264a3e2d0",
 			"migrations_dir": "migrations"
 		}
 	]
