@@ -1,33 +1,28 @@
-import { AigwClient } from './aigw';
-import { search as runSearch, configuredProviders } from './search/registry';
-import { runResearch, type ResearchDeps } from './research';
-import { claimNext, complete, enqueue, failOrRetry, getJob, listJobs, reclaimStale } from './db';
+import { configuredProviders } from './search/registry';
+import { enqueue, getJob, listJobs } from './db';
+
+// The Durable Object queue engine must be exported from the Worker's main module.
+export { ResearchQueue } from './queue';
 
 /**
  * deepscout — a queued research orchestrator over ai-gw.
  *
- *   POST /research        → enqueue { question, maxRounds?, urlsPerRound? }; returns { id, status:'queued' }
- *   GET  /research/:id    → job status + report (when done) + full step trail
- *   GET  /research        → recent jobs / queue
- *   POST /drain           → process the queue now (manual nudge; same work the cron does)
- *   GET  /                → status + configured search providers
+ *   POST /research           → enqueue { question, maxRounds?, urlsPerRound? } → 202 { id, status:'queued' }
+ *   GET  /research/:id        → job status + report (when done) + full step trail
+ *   GET  /research/:id?download=1 → same, as a downloadable JSON archive
+ *   GET  /research            → recent jobs / queue
+ *   POST /drain               → process one now (manual nudge; same work the DO alarm does)
+ *   GET  /                    → status + configured search providers
  *
- * A Cron Trigger (every minute) drains the D1-backed queue in order — Cloudflare
- * Queues are paid-only, so the queue is a table + cron. A failed run backs off
- * and retries (up to 3), each retry rotating which search provider leads, so a
- * rate-limited provider is skipped next time.
+ * The queue is a Durable Object (src/queue.ts): enqueue kicks it, it drains one
+ * job at a time and goes dormant when empty (no cron, no idle polling). Failed
+ * runs back off + retry, rotating the search provider.
  */
 
-// One job per cron tick: the Workers FREE plan caps CPU at 10 ms per invocation,
-// and a job's prompt-building is the main CPU cost — don't stack several in one
-// tick. Cron runs every minute, so the queue still drains steadily. Raise this
-// on Workers Paid (CPU up to 30 s / 5 min).
-const MAX_PER_TICK = 1;
-
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
 	return new Response(JSON.stringify(body, null, 2), {
 		status,
-		headers: { 'content-type': 'application/json; charset=utf-8' }
+		headers: { 'content-type': 'application/json; charset=utf-8', ...headers }
 	});
 }
 
@@ -37,70 +32,8 @@ function authed(request: Request, env: Env): boolean {
 	return m?.[1]?.trim() === env.DEEPSCOUT_TOKEN;
 }
 
-/** Deps for a run; `attempt` rotates the search provider that leads. */
-function buildDeps(env: Env, attempt: number): ResearchDeps {
-	const aigw = new AigwClient(env.AIGW_BASE_URL, env.AIGW_API_KEY);
-	return {
-		search: (q, n) => runSearch(env, q, n, attempt),
-		fetchUrls: (urls) => aigw.fetchUrls(urls),
-		infer: (opts) => aigw.run(opts),
-		now: () => Date.now(),
-		uuid: () => crypto.randomUUID()
-	};
-}
-
-/** Claim and process one queued job. Returns the job id handled, or null. */
-async function processOne(env: Env): Promise<{ id: string; status: string } | null> {
-	const nowSec = Math.floor(Date.now() / 1000);
-	await reclaimStale(env.DB, nowSec);
-	const job = await claimNext(env.DB, nowSec);
-	if (!job) return null;
-
-	try {
-		const outcome = await runResearch(buildDeps(env, job.attempts), {
-			question: job.question,
-			maxRounds: job.opts.maxRounds,
-			urlsPerRound: job.opts.urlsPerRound,
-			extractBatch: job.opts.extractBatch
-		});
-		if (outcome.report) {
-			await complete(env.DB, job.id, outcome, Math.floor(Date.now() / 1000));
-			return { id: job.id, status: 'ok' };
-		}
-		const status = await failOrRetry(
-			env.DB,
-			job.id,
-			job.attempts,
-			'no report produced (extraction/synthesis yielded nothing)',
-			Math.floor(Date.now() / 1000),
-			outcome
-		);
-		return { id: job.id, status };
-	} catch (e) {
-		const status = await failOrRetry(
-			env.DB,
-			job.id,
-			job.attempts,
-			String(e),
-			Math.floor(Date.now() / 1000),
-			null
-		);
-		return { id: job.id, status };
-	}
-}
-
-/** Drain up to `max` jobs (one at a time, in order). */
-async function processQueue(
-	env: Env,
-	max = MAX_PER_TICK
-): Promise<{ id: string; status: string }[]> {
-	const handled: { id: string; status: string }[] = [];
-	for (let i = 0; i < max; i++) {
-		const r = await processOne(env);
-		if (!r) break;
-		handled.push(r);
-	}
-	return handled;
+function queue(env: Env) {
+	return env.RESEARCH_QUEUE.get(env.RESEARCH_QUEUE.idFromName('singleton'));
 }
 
 export default {
@@ -120,7 +53,7 @@ export default {
 		if (!authed(request, env)) return json({ error: 'unauthorized' }, 401);
 		if (!env.DB) return json({ error: 'no DB binding' }, 500);
 
-		// Enqueue a research request.
+		// Enqueue a research request → kick the queue → return the id to poll.
 		if (request.method === 'POST' && path === '/research') {
 			let body: {
 				question?: string;
@@ -154,27 +87,30 @@ export default {
 				},
 				Math.floor(Date.now() / 1000)
 			);
+			await queue(env).kick();
 			return json({ id, status: 'queued', poll: `/research/${id}` }, 202);
 		}
 
-		// Manual nudge — do the cron's work now (handy without waiting a minute).
+		// Manual nudge — do one unit of the queue's work now.
 		if (request.method === 'POST' && path === '/drain') {
-			const handled = await processQueue(env);
-			return json({ handled });
+			return json({ handled: await queue(env).drainNow() });
 		}
 
 		if (request.method === 'GET' && path.startsWith('/research')) {
 			if (path === '/research') return json({ jobs: await listJobs(env.DB) });
 			const id = path.slice('/research/'.length);
 			const found = await getJob(env.DB, id);
-			return found ? json(found) : json({ error: 'not found' }, 404);
+			if (!found) return json({ error: 'not found' }, 404);
+			// ?download=1 → self-contained JSON archive (so ai-gw R2 payloads for
+			// this run's inference calls become disposable).
+			if (url.searchParams.get('download')) {
+				return json(found, 200, {
+					'content-disposition': `attachment; filename="research-${id}.json"`
+				});
+			}
+			return json(found);
 		}
 
 		return json({ error: 'not found' }, 404);
-	},
-
-	// Cron Trigger (every minute) drains the queue.
-	async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-		ctx.waitUntil(processQueue(env));
 	}
 } satisfies ExportedHandler<Env>;

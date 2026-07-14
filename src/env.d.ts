@@ -4,6 +4,7 @@
 declare global {
 	interface Env {
 		DB: D1Database;
+		RESEARCH_QUEUE: DurableObjectNamespace<import('./queue').ResearchQueue>;
 		AIGW_BASE_URL: string;
 		AIGW_API_KEY: string;
 		EXA_API_KEY?: string;

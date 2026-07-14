@@ -180,6 +180,18 @@ export async function failOrRetry(
 	return 'error';
 }
 
+/**
+ * Earliest time the queue has work: the minimum next_run_at among queued jobs
+ * (≤ now means "process now"; a future value is a backed-off retry). null = the
+ * queue is empty, so the DO can go dormant. Epoch seconds.
+ */
+export async function nextWakeAt(db: D1Database): Promise<number | null> {
+	const row = await db
+		.prepare(`SELECT MIN(next_run_at) AS w FROM research_job WHERE status='queued'`)
+		.first<{ w: number | null }>();
+	return row?.w ?? null;
+}
+
 /** Full job + its steps (for debugging / status). */
 export async function getJob(db: D1Database, id: string) {
 	const job = await db.prepare('SELECT * FROM research_job WHERE id = ?').bind(id).first();

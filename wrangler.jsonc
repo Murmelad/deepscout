@@ -8,9 +8,14 @@
 	"compatibility_flags": ["nodejs_als"],
 	"observability": { "enabled": true },
 
-	// The queue is drained by cron (Cloudflare Queues are paid-only). Every
-	// minute the scheduled handler claims the oldest eligible job and runs it.
-	"triggers": { "crons": ["* * * * *"] },
+	// The queue engine is a single SQLite-backed Durable Object (free-tier
+	// eligible). It is event-driven: enqueue → kick() → alarm processes one job
+	// → reschedules to the next due time, or goes dormant when empty. No cron —
+	// no idle polling. (Cloudflare Queues are paid-only; DO alarms are free.)
+	"durable_objects": {
+		"bindings": [{ "name": "RESEARCH_QUEUE", "class_name": "ResearchQueue" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ResearchQueue"] }],
 
 	// Vars (non-secret). The base URL of the ai-gw gateway this orchestrator calls
 	// for /v1/fetch (page text) and /v1/run (inference).

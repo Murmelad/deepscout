@@ -27,20 +27,23 @@ Pipeline per round (`src/research.ts`):
 - **Thin orchestrator over ai-gw.** All keys, provider fall-through, cost metering and inference
   logging live in ai-gw. deepscout calls `/v1/fetch` (page text) and `/v1/run` (route:reasoning
   for extract, Gemini for synth). It never holds provider keys — only an ai-gw project key.
-- **Queued, cron-drained (Cloudflare Queues are paid-only).** `POST /research` enqueues a row
-  (`status='queued'`) and returns an `id` immediately; a **Cron Trigger** (every minute,
-  `wrangler.jsonc` `triggers.crons`) claims the oldest eligible job (compare-and-swap on status so
-  concurrent ticks can't double-claim), runs it, and marks it `ok`. Up to `MAX_PER_TICK` (3) jobs
-  per tick. Stale `running` claims (>10 min) are reaped back to `queued`. Poll `GET /research/:id`.
+- **Queued via a Durable Object — event-driven, dormant when empty (`src/queue.ts`).** The queue
+  engine is one SQLite-backed DO (`idFromName('singleton')`, free-tier eligible). `POST /research`
+  inserts a `queued` row and calls `kick()` → an alarm fires ~immediately. `alarm()` processes ONE
+  job (in order), then `reschedule()` sets the next alarm to the earliest queued `next_run_at`
+  (now if more are ready, the retry time for a backed-off job) — or **deletes the alarm and goes
+  dormant** when the queue is empty. No cron, no idle polling; it wakes only for real work.
+  `POST /drain` (`drainNow()`) processes one immediately for a manual nudge. Poll `GET /research/:id`.
 - **Backoff + provider rotation on failure.** A failed/empty run is requeued with exponential
-  backoff (`backoffSec`, capped 30 min) up to 3 attempts, then `error`. Each retry passes the
-  attempt count as a `rotate` offset to the search registry, so a rate-limited provider is _not_
-  tried first next time. (`db.ts` `failOrRetry`.)
-- **Free-tier bounded per run.** Workers free caps an invocation at **50 subrequests** and
-  **10 ms CPU**. Subrequests: ~1 search + 1 batched fetch (≤10 URLs = 1 subrequest) + a few
+  backoff (`backoffSec`, capped 30 min) up to 3 attempts, then `error`; the DO's alarm wakes at
+  the retry time. Each retry passes the attempt count as a `rotate` offset to the search registry,
+  so a rate-limited provider is _not_ tried first next time. (`db.ts` `failOrRetry`.) Stale
+  `running` claims (crash mid-run) are reaped on the next alarm/kick.
+- **Free-tier bounded per run.** Workers free caps an invocation (incl. a DO alarm) at **50
+  subrequests** and **10 ms CPU**. Subrequests: ~1 search + 1 batched fetch (≤10 URLs = 1) + a few
   extract + 1 gap + 1 synth per round — well under 50 even at 2–3 rounds (network waits aren't
-  CPU). CPU: prompt-building/JSON is the only real cost, so `MAX_PER_TICK=1` (one job/tick) keeps
-  it minimal; a pathologically large job that brushes 10 ms gets killed, stays `running`, and is
+  CPU). CPU: prompt-building/JSON is the only real cost; the DO processes ONE job per alarm to
+  keep it minimal; a pathological job that brushes 10 ms gets killed, stays `running`, and is
   reaped→retried. Workers Paid ($5/mo, CPU 30 s) removes the concern. Bounds: `maxRounds ≤ 4`,
   `urlsPerRound ≤ 12`.
 - **D1 debug trail (free-tier sized).** One `research_job` row (+ queue bookkeeping: attempts,
@@ -75,19 +78,21 @@ npm run deploy              # wrangler deploy
 
 ## API
 
-| Method · Path       | Does                                                                                                   |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `GET /`             | status + configured search providers (public)                                                          |
-| `POST /research`    | enqueue `{ question, maxRounds?, urlsPerRound?, extractBatch? }` → `202 { id, status:'queued', poll }` |
-| `GET /research/:id` | job status (queued/running/ok/error) + report when done + full step trail                              |
-| `GET /research`     | recent jobs / queue (metadata)                                                                         |
-| `POST /drain`       | process the queue now (same work the cron does; handy for a manual nudge / local dev)                  |
+| Method · Path                  | Does                                                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `GET /`                        | status + configured search providers (public)                                                          |
+| `POST /research`               | enqueue `{ question, maxRounds?, urlsPerRound?, extractBatch? }` → `202 { id, status:'queued', poll }` |
+| `GET /research/:id`            | job status (queued/running/ok/error) + report when done + full step trail                              |
+| `GET /research/:id?download=1` | same, as a downloadable JSON archive (self-contained → ai-gw R2 payloads become disposable)            |
+| `GET /research`                | recent jobs / queue (metadata)                                                                         |
+| `POST /drain`                  | process one job now (same work the DO alarm does; manual nudge / local dev)                            |
 
 Auth: if `DEEPSCOUT_TOKEN` is set, all but `GET /` require `Authorization: Bearer <token>`.
 
 ## Bindings & env
 
-- Binding: `DB` (D1 `deepscout-db`).
+- Bindings: `DB` (D1 `deepscout-db`, id in `wrangler.jsonc`), `RESEARCH_QUEUE` (Durable Object
+  `ResearchQueue`, SQLite migration tag `v1`).
 - Var: `AIGW_BASE_URL` (ai-gw gateway URL).
 - Secrets (`wrangler secret put` / `.dev.vars`): `AIGW_API_KEY` (an ai-gw project key for
   project "deepscout"), `EXA_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `BRAVE_API_KEY`,
@@ -106,12 +111,13 @@ Mirrors ai-gw's model — **Cloudflare pulls and builds from Git**; no GitHub Ac
    Cloudflare dashboard (Workers Builds), or `npm run deploy` manually. Cron triggers deploy
    with the Worker automatically (no extra step).
 
-## Scaling path (when a run needs to outgrow one request)
+## Scaling path (when a single run needs to outgrow one request/alarm)
 
-Multi-round deep research that exceeds the 50-subrequest / single-request budget should move to
-a **Cloudflare Workflow** (durable, per-step retries, each step its own subrequest budget) or a
-Durable Object driven by alarms — both on the free tier. Keep `runResearch`'s pure core; wrap it
-so each `phase` becomes a Workflow `step.do(...)`. Queues are **paid-only** — don't use them.
+The DO alarm runs a whole job in one invocation (fine within 50 subrequests / 10 ms CPU for
+bounded runs). If a single run must go deeper (more rounds/URLs than one invocation allows), split
+`runResearch` so each `phase` is its own DO alarm hop (persist partial state in the DO's SQLite
+between hops) or move to a **Cloudflare Workflow** (durable per-step retries) — both free-tier.
+Keep the pure core. Cloudflare **Queues are paid-only** — the DO+alarm queue is the free path.
 
 ## Conventions & gotchas
 
