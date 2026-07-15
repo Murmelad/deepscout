@@ -15,7 +15,7 @@ import type { FetchedPage, InferResult } from './aigw';
 
 export interface ResearchDeps {
 	search(query: string, maxResults: number): Promise<{ provider: string; results: SearchResult[] }>;
-	fetchUrls(urls: string[], render?: boolean): Promise<FetchedPage[]>;
+	fetchUrls(urls: string[], render?: boolean | 'residential' | 'cf'): Promise<FetchedPage[]>;
 	infer(opts: {
 		route?: string;
 		models?: { provider: string; model: string }[];
@@ -336,8 +336,10 @@ export async function runResearch(
 			}
 		}
 
-		// 2b. Optionally escalate JS-thin pages to a rendered fetch (capped —
-		//     Browser Rendering's free budget is tiny). Off unless options.render.
+		// 2b. Optionally escalate JS-thin pages (likely SPA shells or datacenter-IP
+		//     blocks) to the homescout real browser on a residential IP, capped.
+		//     Off unless options.render; degrades to a plain fetch if homescout
+		//     isn't configured in ai-gw.
 		if (options.render) {
 			const thin = needFetch
 				.filter((u) => (fetchedByUrl.get(u)?.text?.length ?? 0) < RENDER_THIN_CHARS)
@@ -345,7 +347,7 @@ export async function runResearch(
 			if (thin.length) {
 				const t0 = deps.now();
 				try {
-					const rendered = await deps.fetchUrls(thin, true);
+					const rendered = await deps.fetchUrls(thin, 'residential');
 					let improved = 0;
 					for (const p of rendered) {
 						const prev = fetchedByUrl.get(p.url)?.text?.length ?? 0;

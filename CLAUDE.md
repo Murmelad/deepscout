@@ -143,8 +143,11 @@ hand over a request engineered to succeed:
   gap-filling), 1–2 for narrow factual ones; `urlsPerRound` (≤12) for source breadth;
   `extractBatch` smaller = more parallel model calls (more independent rate-limit buckets),
   larger = fewer calls but more text per model.
-- **Prefer web-answerable questions.** Fetch is lightweight HTML→text — no JS rendering, no
-  paywalls, no PDFs. Favor topics covered by public article/doc text.
+- **Prefer web-answerable questions.** The first-pass fetch is lightweight HTML→text (no
+  paywalls, no PDFs). With `render:true`, JS-thin/blocked pages are escalated to a real browser on
+  a residential IP (the **homescout** service, via ai-gw `/v1/fetch {render:"residential"}`) —
+  capped at `RENDER_CAP` per round, and only if homescout is configured in ai-gw (else those pages
+  stay thin). Favor topics covered by public article/doc text.
 - **Treat the report as sourced raw material, not the final word.** deepscout does breadth-first
   gathering + a Flash-tier synthesis. For anything reasoning-heavy, have the capable caller reason
   over the returned **notes + sources** (every claim carries its URL) rather than trusting the

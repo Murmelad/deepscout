@@ -49,7 +49,7 @@ export class ResearchQueue extends DurableObject<Env> {
 		const aigw = new AigwClient(this.env.AIGW_BASE_URL, this.env.AIGW_API_KEY);
 		return {
 			search: (q, n) => runSearch(this.env, q, n, attempt),
-			fetchUrls: (urls) => aigw.fetchUrls(urls),
+			fetchUrls: (urls, render) => aigw.fetchUrls(urls, 12_000, render),
 			infer: (opts) => aigw.run(opts),
 			now: () => Date.now(),
 			uuid: () => crypto.randomUUID(),

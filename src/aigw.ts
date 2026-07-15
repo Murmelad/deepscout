@@ -35,11 +35,17 @@ export class AigwClient {
 	}
 
 	/**
-	 * POST /v1/fetch — up to 10 URLs per call → clean page text. `render:true`
-	 * asks ai-gw for JS-rendered content (Browser Rendering); ai-gw caps how many
-	 * it renders and degrades to plain fetch, so it's safe to pass freely.
+	 * POST /v1/fetch — up to 10 URLs per call → clean page text. `render` asks
+	 * ai-gw for JS-rendered content: `'residential'` routes to the homescout
+	 * real-browser service (home IP; bypasses datacenter blocks), `true`/`'cf'`
+	 * uses Cloudflare Browser Rendering. ai-gw degrades to a plain fetch when the
+	 * chosen renderer isn't configured, so it's safe to pass freely.
 	 */
-	async fetchUrls(urls: string[], maxChars = 12_000, render = false): Promise<FetchedPage[]> {
+	async fetchUrls(
+		urls: string[],
+		maxChars = 12_000,
+		render: boolean | 'residential' | 'cf' = false
+	): Promise<FetchedPage[]> {
 		const out: FetchedPage[] = [];
 		for (let i = 0; i < urls.length; i += 10) {
 			const batch = urls.slice(i, i + 10);
