@@ -33,8 +33,15 @@ export async function enqueue(
 		.run();
 }
 
+/** A 'running' claim older than this is presumed crashed and gets requeued. */
+export const STALE_SEC = 600;
+
 /** Requeue 'running' jobs whose claim went stale (worker crashed mid-run). */
-export async function reclaimStale(db: D1Database, nowSec: number, staleSec = 600): Promise<void> {
+export async function reclaimStale(
+	db: D1Database,
+	nowSec: number,
+	staleSec = STALE_SEC
+): Promise<void> {
 	await db
 		.prepare(
 			`UPDATE research_job SET status='queued', running_at=NULL, updated_at=?
@@ -271,13 +278,24 @@ export async function failOrRetry(
 }
 
 /**
- * Earliest time the queue has work: the minimum next_run_at among queued jobs
- * (≤ now means "process now"; a future value is a backed-off retry). null = the
- * queue is empty, so the DO can go dormant. Epoch seconds.
+ * Earliest time the queue has work: the minimum of next_run_at among queued
+ * jobs (≤ now means "process now"; a future value is a backed-off retry) and
+ * the reap time of any 'running' claim — a crash mid-run must wake the DO to
+ * reclaim the job, otherwise an otherwise-empty queue would go dormant over it
+ * and strand it in 'running' forever. null = no queued or running jobs, so the
+ * DO can go dormant. Epoch seconds.
  */
-export async function nextWakeAt(db: D1Database): Promise<number | null> {
+export async function nextWakeAt(db: D1Database, staleSec = STALE_SEC): Promise<number | null> {
 	const row = await db
-		.prepare(`SELECT MIN(next_run_at) AS w FROM research_job WHERE status='queued'`)
+		.prepare(
+			`SELECT MIN(w) AS w FROM (
+				SELECT next_run_at AS w FROM research_job WHERE status='queued'
+				UNION ALL
+				SELECT running_at + ? FROM research_job WHERE status='running' AND running_at IS NOT NULL
+			)`
+		)
+		// +1 so the alarm fires strictly after reclaimStale's `running_at < now - staleSec` cutoff.
+		.bind(staleSec + 1)
 		.first<{ w: number | null }>();
 	return row?.w ?? null;
 }

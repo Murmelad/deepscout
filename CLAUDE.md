@@ -64,7 +64,9 @@ synthesis — no re-searching/-extracting, and no re-hitting the limits that cau
   registry, so a rate-limited provider is _not_ tried first next time. (`db.ts` `failOrRetry`.)
   Retries are cheap because a synth-only failure **resumes** from saved notes (see "Resume, don't
   restart" above), so more attempts are affordable. Stale `running` claims (crash mid-run) are
-  reaped on the next alarm/kick.
+  reaped on the next alarm/kick — and `nextWakeAt` counts a running claim's reap time
+  (`running_at + STALE_SEC`), so `reschedule()` keeps an alarm set for it rather than going
+  dormant: a crash with an otherwise-empty queue self-heals instead of stranding the job.
 - **Free-tier bounded per run.** Workers free caps an invocation (incl. a DO alarm) at **50
   subrequests** and **10 ms CPU**. Subrequests: ~1 search + 1 batched fetch (≤10 URLs = 1) + a few
   extract + 1 gap + 1 synth per round — well under 50 even at 2–3 rounds (network waits aren't
